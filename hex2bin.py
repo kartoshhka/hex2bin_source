@@ -5,10 +5,9 @@ import tkinter as tk
 import tkinter.ttk as ttk
 from threading import Thread
 from PyCRC.CRC16 import CRC16
-from typing import List
-
 from intelhex import IntelHex
 import tkinter.filedialog as filedialog
+import traceback
 try:
     Spinbox = ttk.Spinbox
 except AttributeError:
@@ -17,7 +16,7 @@ except AttributeError:
 APPNAME = "Hex2Efa"
 BLOCK_WIDTH = 16
 BLOCK_HEIGHT = 32
-BLOCK_SIZE = 124 # 124 bytes
+BLOCK_SIZE = 124  # 124 bytes
 ENCODINGS = ("ASCII", "CP037", "CP850", "CP1140", "CP1252",
              "Latin1", "ISO8859_15", "Mac_Roman", "UTF-8",
              "UTF-8-sig", "UTF-16", "UTF-32")
@@ -36,6 +35,9 @@ class MainWindow:
         self.success = ""
         self.success_text = tk.StringVar()
         self.success_text.set(self.success)
+        self.hex_error = ""
+        self.hex_error_text = tk.StringVar()
+        self.hex_error_text.set(self.hex_error)
         self.create_widgets()
         self.create_layout()
         self.create_bindings()
@@ -71,6 +73,8 @@ class MainWindow:
         self.progressRow = ttk.Label(frame, text="Progress:")
         self.progressCount = ttk.Label(frame, textvariable=self.progress_index_text)
         self.successText = tk.Label(frame, textvariable=self.success_text)
+        self.errFrame = ttk.Frame(self.parent)
+        self.errorText = tk.Label(self.errFrame, textvariable=self.hex_error_text)
         self.emptyRow1 = ttk.Label(frame)
         self.emptyRow2 = ttk.Label(frame)
         self.emptyRow3 = ttk.Label(frame)
@@ -94,6 +98,8 @@ class MainWindow:
                 self.progressCount,)):
             widget.grid(row=4, column=column)
         self.successText.grid(row=5, column=1)
+        self.errFrame.grid(row=1, column=1, sticky='w')
+        self.errorText.grid(row=0, column=1)
 
     def create_bindings(self):
         for keypress in ("<Control-o>", "<Alt-o>"):
@@ -111,7 +117,7 @@ class MainWindow:
             self.parent.title("{} — {}".format(filename, APPNAME))
             self.size = os.path.getsize(filename)
             self.filename = filename
-            if self.success:
+            if self.success or self.hex_error:
                 self.version = []
                 for ent in self.entsVersion:
                     ent.configure(state="normal")
@@ -120,31 +126,42 @@ class MainWindow:
                 self.progress_index_text.set(self.progress_index)
                 self.success = ""
                 self.success_text.set(self.success)
+                self.hex_error = ""
+                self.hex_error_text.set(self.success)
 
     def convert(self, *args):
         if not self.filename or not self.version:
             return
-        ih = IntelHex(self.filename)
+        try:
+            ih = IntelHex(self.filename)
+        except Exception as e: # Проверяем, что файл корректный
+            err = traceback.format_exc().split(':')
+            self.hex_error = 'Ошибка: ' + err[len(err) - 1]
+            self.hex_error_text.set(self.hex_error)
+            self.filename = None
+            return
+
         block_num = [0x00, 0x00]
         arr = ih.tobinarray() # массив с "голыми" данными из hex-файла
         arr = bytes(arr)
         # Необходимо записать данные в файл. строка = 16 байт
         # Заголовок: строка 1 - E F A m e d i c a L L C _ _ _ _ (версия железа)
-        # строка 2 - размер прошивки (4 байта) + crc16(2 байта) + padding(8 байт,ljust) + crc16 заголовка (2 бвйтв)
+        # строка 2 - размер прошивки (4 байта) + crc16(2 байта) + padding(8 байт) + crc16 заголовка (2 бвйтв)
         header = self.get_header()
-        #print([int(i) for i in header])
+        # print([int(i) for i in header])
 
         # Далее блоки. Блок - 128 байт:
         # № блока (2 байта) + прошивка (124 байта), + CRC16 (2 байта)
-        fout = open('bintest.efa', 'wb')
+        new_fname = ''.join(self.version) + '_FW.efa'
+        fout = open(new_fname, 'wb')
         fout.write(header) # Сначала записываем заголовок
         for block in range(0, len(arr), BLOCK_SIZE):
             # Номер блока
             arr_for_crc = bytes(block_num) + arr[block:block + BLOCK_SIZE]
-            if(block_num[1] <= 255):
+            if block_num[1] < 255:
                 block_num[1] += 1
             else: # предполагается, что блоков будет точно меньше 65535
-                block_num[1] = 1
+                block_num[1] = 0
                 block_num[0] += 1
             arr_with_crc = arr_for_crc + CRC16().calculate(arr_for_crc).to_bytes(2, byteorder='big')
             fout.write(arr_with_crc)
@@ -153,9 +170,9 @@ class MainWindow:
         self.get_success()
 
         # TEST
-        fout = open('bintest.efa', 'rb')
-        #print([int(i) for i in fout.read()])
-        fout.close()
+        # fout = open('bintest.efa', 'rb')
+        # print([int(i) for i in fout.read()])
+        # fout.close()
 
     def start_thread(self):
         self.t = Thread(target=self.convert)
@@ -190,7 +207,6 @@ class MainWindow:
             self.progress_index = 100
         else:
             self.progress_index = int(current / total * 100)
-        time.sleep(0.01)  # для красоты, можно убрать
         self.progress_index_text.set(self.progress_index)
 
     def get_success(self):
@@ -206,5 +222,8 @@ app.title(APPNAME)
 window = MainWindow(app)
 app.protocol("WM_DELETE_WINDOW", window.quit)
 app.resizable(width=False, height=False)
-app.geometry('{}x{}'.format(372, 150))
+app.geometry('{}x{}'.format(372, 160))
 app.mainloop()
+
+
+
